@@ -81,7 +81,12 @@ impl<T> List<T> {
 
   /// Returns an iterator over the contents of `self`.
   pub fn iter(&self) -> ListIterator<'_, T> {
-    ListIterator { base: self, position: self.first_address() }
+    ListIterator { addresses: self.addresses() }
+  }
+
+  /// Returns an iterator over the addresses in `self`.
+  pub fn addresses(&self) -> AddressIterator<'_, T> {
+    AddressIterator  { base: self, position: self.first_address() }
   }
 
   /// Reserves enough space to store the `additional` new elements in `self` without allocating new
@@ -292,6 +297,9 @@ impl Address {
   /// Creates a new instance with the given offset.
   fn new(offset: usize) -> Self { Address { offset } }
 
+  /// Returns the raw value of this address.
+  pub fn raw(&self) -> usize { self.offset }
+
 }
 
 impl PartialEq<Option<Address>> for Address {
@@ -306,11 +314,8 @@ impl PartialEq<Option<Address>> for Address {
 /// An iterator over the contents of a doubly-linked list.
 pub struct ListIterator<'a, T> {
 
-  /// The list whose contents is being iterated over.
-  base: &'a List<T>,
-
-  /// The current position of the iterator.
-  position: Option<Address>,
+  /// An iterator over the addresses of the contents produced by `self`.
+  addresses: AddressIterator<'a, T>,
 
 }
 
@@ -319,9 +324,30 @@ impl<'a, T> Iterator for ListIterator<'a, T> {
   type Item = &'a T;
 
   fn next(&mut self) -> Option<&'a T> {
+    self.addresses.next().map(|a| &self.addresses.base[a])
+  }
+
+}
+
+/// An iterator over the addresses of the elements of a doubly-linked list.
+pub struct AddressIterator<'a, T> {
+
+  /// The list whose contents is being iterated over.
+  base: &'a List<T>,
+
+  /// The current position of the iterator.
+  position: Option<Address>,
+
+}
+
+impl<'a, T> Iterator for AddressIterator<'a, T> {
+
+  type Item = Address;
+
+  fn next(&mut self) -> Option<Address> {
     if let Some(a) = self.position {
       self.position = self.base.address_after(a);
-      Some(&self.base[a])
+      Some(a)
     } else {
       None
     }
@@ -459,6 +485,15 @@ mod tests {
     assert_eq!(xs.address_after(b), None);
 
     Ok(())
+  }
+
+  #[test]
+  fn test_addresses() -> Result<(), String> {
+    let mut xs = List::<&str>::new();
+    xs.extend(vec!["a", "b"]);
+
+    let ys = xs.addresses().map(|a| xs[a].clone());
+    assert_eq!(ys, vec!["a", "b"]);
   }
 
   #[test]
