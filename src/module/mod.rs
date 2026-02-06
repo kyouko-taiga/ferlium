@@ -38,7 +38,7 @@ pub use uses::*;
 
 use std::{
     cell::{Ref, RefCell, RefMut},
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map},
     fmt,
     hash::{DefaultHasher, Hash, Hasher},
 };
@@ -205,6 +205,11 @@ impl Module {
             .cloned()
             .chain(self.type_defs.keys().cloned())
             .chain(self.type_aliases.iter().map(|(name, _)| *name))
+    }
+
+    /// Returns the names of the functions in this module.
+    pub fn owned_functions(&self) ->  hash_map::Keys<'_, Ustr, HashSet<LocalFunctionId>> {
+        self.function_name_to_id.keys()
     }
 
     /// Return the type for the source pos, if any.

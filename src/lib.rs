@@ -25,6 +25,7 @@ mod desugar;
 mod dictionary_passing;
 pub mod effects;
 pub mod emit_ir;
+pub mod emit_ssa;
 pub mod error;
 mod escapes;
 pub mod eval;
@@ -42,6 +43,7 @@ pub mod module;
 pub mod mutability;
 mod never;
 mod parser_helpers;
+pub mod ssa;
 pub mod std;
 mod sync;
 pub mod r#trait;
@@ -326,6 +328,8 @@ impl CompilerSession {
         // Link the module.
         // This must be done after emitting the expression, as that may add new imports.
         other_modules.link(&module);
+
+        let _ = emit_ssa::emit_ssa(&module, other_modules);
 
         Ok(ModuleAndExpr { module, expr })
     }

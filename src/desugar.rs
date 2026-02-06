@@ -265,7 +265,7 @@ impl NamedTypeData {
 }
 
 impl PModule {
-    /// Desugars a parsed module and resolve its types and write them into output.
+    /// Desugars a parsed module, resolves its types, and writes them into output.
     /// Returns a desugared AST and a list of strongly connected components of its
     /// function dependency graph, sorted topologically.
     pub fn desugar(
