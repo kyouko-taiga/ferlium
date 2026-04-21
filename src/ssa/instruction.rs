@@ -24,6 +24,11 @@ pub struct Instruction {
 
 impl Instruction {
 
+  /// Evaluates `self` in the given context and returns what action should be taken next.
+  pub fn evaluate(&self, context: &mut ssa::EvaluationContext) -> ssa::Step {
+    self.kind.evaluate(self, context)
+  }
+
   /// The type of the instruction's result.
   pub fn result(&self) -> InstructionResult {
     self.kind.result(self)
@@ -112,6 +117,12 @@ pub trait InstructionKind: Any {
 
   /// Returns `true` iff `self` is a terminator.
   fn is_terminator(&self) -> bool { false }
+
+  /// Evaluates `self`, which is the kind-specific part of `whole`, in the given context and
+  /// returns what action should be taken next.
+  fn evaluate(&self, _whole: &Instruction, _context: &mut ssa::EvaluationContext) -> ssa::Step {
+    ssa::Step::Advance
+  }
 
   /// Computes a textual representation of `self`, which is the kind-specific part of `whole`.
   fn fmt_within(&self, f: &mut fmt::Formatter<'_>, whole: &Instruction) -> std::fmt::Result;
