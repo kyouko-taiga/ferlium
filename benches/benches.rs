@@ -16,7 +16,7 @@ use ferlium::{
     module::ModuleId,
     run_fn_native,
     std::{array::array_type, math::int_type, string::String as Str},
-    value::Value,
+    hir::value::Value,
 };
 
 // --- Benchmark Functions ---

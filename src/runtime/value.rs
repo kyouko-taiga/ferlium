@@ -1,60 +1,42 @@
 use std::fmt;
 
-use itertools::Itertools;
-use ustr::Ustr;
+use crate::{ssa::value::FunctionReference};
 
-use crate::{module::FunctionId, ssa};
-
-/// A value in the SSA form of Ferlium.
+/// A runtime value
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Value {
+  /// A memory adress
+  MemoryAdress(u64),
 
   /// A constant boolean
   Boolean(bool),
 
-  /// A dictionary value
-  Dictionary(Vec<ssa::Value>),
+  /// A dictionnary
+  Dictionnary(Vec<Self>),
 
-  /// A reference to a lowered function.
+  /// A runtime function
   Function(FunctionReference),
 
-  /// A constant integer.
+  /// A constant integer
   Integer(Box<Integer>),
 
-  /// The `i`-th parameter of a function.
-  Parameter(usize),
-
-  /// The register assigned by an instruction.
-  Register(ssa::InstructionIdentity),
-
-  /// A unit value.
-  Unit,
-
+  /// A unit value
+  Unit
 }
 
 impl fmt::Display for Value {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      Value::Boolean(i) => write!(f, "i1 {}", *i as u8),
-      Value::Dictionary(i) => {
-        write!(f, "({})", i.iter().map(|v| format!("{}", v)).join(", "))
-      },
-      Value::Function(i) => write!(f, "{}", i.representation),
+      Value::MemoryAdress(i) => write!(f, "#{}", i),
+      Value::Unit => write!(f, "()"),
+      Value::Boolean(i) => write!(f, "{}", i),
       Value::Integer(i) => i.fmt(f),
-      Value::Parameter(i) => write!(f, "%p{}", i),
-      Value::Register(i) => write!(f, "%r{}", i.raw()),
-      Value::Unit => write!(f, "()")
+      Value::Dictionnary(d) => write!(f, "{:?}", d),
+      Value::Function(d) => write!(f, "{}", d.representation),
     }
   }
 }
 
-/// A function reference, represented as its reference, and its representation
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct FunctionReference {
-  pub representation: Ustr,
-
-  pub reference: FunctionId
-}
 
 /// A constant integer, represented as a two's complement value.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -86,6 +68,14 @@ impl Integer {
     }
   }
 
+  pub fn from_u64(value: u64) -> Self {
+    Self {
+      bits: value,
+      bit_width: 64,
+      signed: false
+    }
+  }
+
   pub fn from_i32(value: i32) -> Self {
     Self {
       bits: i32::cast_unsigned(value).into(),
@@ -98,9 +88,9 @@ impl Integer {
 impl fmt::Display for Integer {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     if self.signed {
-      write!(f, "i{} {}", self.bit_width, u64::cast_signed(self.bits))
+      write!(f, "{}", u64::cast_signed(self.bits))
     } else {
-      write!(f, "u{} {}", self.bit_width, self.bits)
+      write!(f, "u{}", self.bits)
     }
   }
 }

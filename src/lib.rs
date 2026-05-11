@@ -24,6 +24,7 @@ pub mod list;
 pub mod module;
 pub mod parser;
 pub mod ssa;
+pub mod runtime;
 pub mod std;
 mod sync;
 pub mod types;
