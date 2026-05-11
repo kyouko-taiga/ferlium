@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::fmt;
 
-use crate::{Location, cached_primitive_ty, list, ssa, types::r#type::Type};
+use crate::{Location, cached_primitive_ty, list, runtime, ssa, types::r#type::Type};
 
 /// The identity of an instruction in the context of its containing funtion.
 pub type InstructionIdentity = list::Address;
@@ -19,6 +19,12 @@ pub struct Instruction {
 }
 
 impl Instruction {
+
+  /// Evaluates `self` in the given context and returns what action should be taken next.
+  pub fn evaluate(&self, context: &mut ssa::EvaluationContext) -> ssa::Step {
+    self.kind.evaluate(self, context)
+  }
+
   /// The type of the instruction's result.
   pub fn result(&self) -> InstructionResult {
     self.kind.result(self)
@@ -104,6 +110,12 @@ pub trait InstructionKind: Any {
   /// Returns `true` iff `self` is a terminator.
   fn is_terminator(&self) -> bool { false }
 
+  /// Evaluates `self`, which is the kind-specific part of `whole`, in the given context and
+  /// returns what action should be taken next.
+  fn evaluate(&self, _whole: &Instruction, _context: &mut ssa::EvaluationContext) -> ssa::Step {
+    ssa::Step::Advance
+  }
+
   /// Computes a textual representation of `self`, which is the kind-specific part of `whole`.
   fn fmt_within(&self, f: &mut fmt::Formatter<'_>, whole: &Instruction) -> std::fmt::Result;
 
@@ -158,6 +170,12 @@ impl InstructionKind for Alloca {
     InstructionResult::pointer_to(InstructionResult::Lowered(self.ty))
   }
 
+  fn evaluate(&self, _whole: &Instruction, _context: &mut ssa::EvaluationContext) -> ssa::Step {
+    let a = _context.allocate();
+    _context.set_local_at_current_position(runtime::Value::MemoryAdress(a));
+    ssa::Step::Advance
+  }
+
   fn fmt_within(&self, f: &mut fmt::Formatter<'_>, whole: &Instruction) -> fmt::Result {
     write!(f, "alloca {:?}", self.ty)
   }
@@ -178,6 +196,16 @@ impl InstructionKind for Call {
     InstructionResult::Lowered(self.ty)
   }
 
+  fn evaluate(&self, _whole: &Instruction, _context: &mut ssa::EvaluationContext) -> ssa::Step {
+    let ssa::Value::Function(r) = _whole.operands[0] else {
+      panic!("call instruction expect a function reference as first operand")
+    };
+    let arguments = _whole.operands.to_vec()[1..].iter().map(|a| _context.to_runtime_value(a)).collect();
+    let r = _context.program.evaluate(r, arguments);
+    _context.set_local_at_current_position(r);
+    ssa::Step::Advance
+  }
+
   fn fmt_within(&self, f: &mut fmt::Formatter<'_>, whole: &Instruction) -> fmt::Result {
     write!(f, "call {}(", whole.operands[0])?;
     for i in 1..whole.operands.len() {
@@ -196,6 +224,13 @@ impl InstructionKind for CompareEqual {
 
   fn result(&self, whole: &Instruction) -> InstructionResult {
     InstructionResult::pointer_to(InstructionResult::Lowered(cached_primitive_ty!(bool)))
+  }
+
+  fn evaluate(&self, whole: &Instruction, context: &mut ssa::EvaluationContext) -> ssa::Step {
+    let v1 = context.to_runtime_value(&whole.operands[0]);
+    let v2 = context.to_runtime_value(&whole.operands[1]);
+    context.set_local_at_current_position(runtime::Value::Boolean(v1 == v2));
+    ssa::Step::Advance
   }
 
   fn fmt_within(&self, f: &mut fmt::Formatter<'_>, whole: &Instruction) -> std::fmt::Result {
@@ -222,6 +257,22 @@ impl InstructionKind for ConditionalBranch {
     true
   }
 
+  fn evaluate(&self, whole: &Instruction, context: &mut ssa::EvaluationContext) -> ssa::Step {
+    let c = context.to_runtime_value(&whole.operands[0]);
+    match c {
+      runtime::Value::Boolean(b) => {
+        if b {
+          ssa::Step::Goto(self.on_success)
+        } else {
+          ssa::Step::Goto(self.on_failure)
+        }
+      },
+      _ => {
+        panic!("unreachable: The first operand of a condbr should be a boolean")
+      }
+    }
+  }
+
   fn fmt_within(&self, f: &mut fmt::Formatter<'_>, whole: &Instruction) -> fmt::Result {
     write!(
       f, "condbr {}, %b{}, &b{}",
@@ -237,6 +288,16 @@ impl InstructionKind for Load {
 
   fn result(&self, whole: &Instruction) -> InstructionResult {
     InstructionResult::pointee_of(InstructionResult::Same(whole.operands[0].clone()))
+  }
+
+  fn evaluate(&self, whole: &Instruction, context: &mut ssa::EvaluationContext) -> ssa::Step {
+
+    let runtime::Value::MemoryAdress(a) = context.to_runtime_value(&whole.operands[0]) else {
+      panic!("unreachable: First operand of 'load' must be a memory adress");
+    };
+    let v = context.get_memory(&a);
+    context.set_local_at_current_position(v);
+    ssa::Step::Advance
   }
 
   fn fmt_within(&self, f: &mut fmt::Formatter<'_>, whole: &Instruction) -> fmt::Result {
@@ -261,6 +322,19 @@ impl InstructionKind for Project {
     InstructionResult::Lowered(self.ty)
   }
 
+  fn evaluate(&self, whole: &Instruction, _context: &mut ssa::EvaluationContext) -> ssa::Step {
+    let v = _context.to_runtime_value(&whole.operands[0]);
+    match v {
+      runtime::Value::Dictionnary(d) => {
+        _context.set_local_at_current_position(d[self.index].clone());
+      },
+      _ => {
+        panic!("The operand of a `project` instruction must be a dictionnary");
+      }
+    }
+    ssa::Step::Advance
+  }
+
   fn fmt_within(&self, f: &mut fmt::Formatter<'_>, whole: &Instruction) -> std::fmt::Result {
     write!(f, "project {} from {}", self.index, whole.operands[0])
   }
@@ -276,6 +350,11 @@ impl InstructionKind for Ret {
     true
   }
 
+  fn evaluate(&self, whole: &Instruction, context: &mut ssa::EvaluationContext) -> ssa::Step {
+    let v = context.to_runtime_value(&whole.operands[0]);
+      ssa::Step::Return(v)
+  }
+
   fn fmt_within(&self, f: &mut fmt::Formatter<'_>, whole: &Instruction) -> fmt::Result {
     write!(f, "ret {}", whole.operands[0])
   }
@@ -286,6 +365,13 @@ impl InstructionKind for Ret {
 struct Store {}
 
 impl InstructionKind for Store {
+
+  fn evaluate(&self, whole: &Instruction, context: &mut ssa::EvaluationContext) -> ssa::Step {
+    let v = context.to_runtime_value(&whole.operands[0]);
+    let a = context.to_runtime_value(&whole.operands[1]);
+    context.set_memory(a, v);
+    ssa::Step::Advance
+  }
 
   fn fmt_within(&self, f: &mut fmt::Formatter<'_>, whole: &Instruction) -> fmt::Result {
     write!(f, "store {} to {}", whole.operands[0], whole.operands[1])
@@ -302,6 +388,10 @@ impl InstructionKind for UnconditionalBranch {
 
   fn is_terminator(&self) -> bool {
     true
+  }
+
+  fn evaluate(&self, _whole: &Instruction, _context: &mut ssa::EvaluationContext) -> ssa::Step {
+      ssa::Step::Goto(self.target)
   }
 
   fn fmt_within(&self, f: &mut fmt::Formatter<'_>, whole: &Instruction) -> fmt::Result {

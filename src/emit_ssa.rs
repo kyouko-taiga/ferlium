@@ -1,9 +1,5 @@
 use crate::{
-  Location, Modules, containers,
-  format::FormatWith,
-  hir::{self, Case, NodeArena, value::Value},
-  module::{FunctionId, LocalFunctionId, Module, ModuleEnv, TraitImpl, TraitImplId},
-  ssa::{self, BlockIdentity, Program},
+  Location, Modules, containers, format::FormatWith, hir::{self, Case, NodeArena, value::Value}, module::{FunctionId, LocalFunctionId, Module, ModuleEnv, TraitImpl, TraitImplId}, runtime, ssa::{self, BlockIdentity, Program, value::FunctionReference}
 };
 
 /// Emit the low-level (aka SSA) ferlium IR of `module`.
@@ -43,7 +39,7 @@ struct Emitter<'a> {
   others: &'a Modules,
 
   /// The program into which IR is being emitted.
-  program: &'a mut Program,
+  program: &'a mut Program<'a>,
 
   /// The context in which the emitter inserts new IR.
   context: InsertionContext,
@@ -59,7 +55,6 @@ impl<'a> Emitter<'a> {
   fn emit_ssa_fn(identity: LocalFunctionId, module: &'a Module, others: &'a Modules) -> String {
     // TODO: This is the program into which IR is being inserted. Eventually that should become
     // an argument of the function, as this data structure should persist.
-    let mut program = Program::new();
 
     let f = module.get_function_by_id(identity).unwrap();
     match f.code.as_ref().as_script() {
@@ -67,8 +62,8 @@ impl<'a> Emitter<'a> {
         // Create the function.
         // TODO: Use better identities.
 
-        let name = module.get_function_name_by_id(identity).unwrap();
-        let mut lowered = ssa::Function::new(name);
+        let e = ModuleEnv::new(module, others);
+        let mut lowered = ssa::Function::new(format!("{}", FunctionId::Local(identity).format_with(&e)).into());
 
         let t = f.definition.ty_scheme.extra_parameters();
 
@@ -86,7 +81,7 @@ impl<'a> Emitter<'a> {
         let mut emitter = Emitter {
           module,
           others,
-          program: &mut program,
+          program: &mut Program::new(module),
           context: InsertionContext {
             function: lowered,
             point: InsertionPoint::End(entry),
@@ -102,8 +97,13 @@ impl<'a> Emitter<'a> {
 
         // Save the definition of the lowered function into the SSA program.
         lowered = emitter.context.function;
-        let g = program.set_definition(lowered);
-        format!("{}", *g)
+        let g = emitter.program.set_definition(lowered);
+        let n = g.name;
+        let s = format!("{}", *g);
+        let mut arguments: Vec<runtime::Value> = vec![];
+        arguments.push(runtime::Value::Integer(Box::new(runtime::value::Integer::from_i32(4))));
+        println!("Evaluation result : {}", emitter.program.evaluate(FunctionReference { representation: n, reference: FunctionId::Local(identity) }, arguments));
+        s
       }
 
       None => panic!(),
@@ -114,7 +114,7 @@ impl<'a> Emitter<'a> {
   fn demand_function(&mut self, f: FunctionId) -> ssa::Value {
     let e = ModuleEnv::new(self.module, self.others);
     let s = format!("{}", f.format_with(&e));
-    ssa::Value::Function(s.into())
+    ssa::Value::Function(FunctionReference {reference: f, representation: s.into()})
   }
 
   /// Generates the IR for `node`, which occurs as a statement.
@@ -275,15 +275,15 @@ impl<'a> Emitter<'a> {
                   let n = if m == self.module.module_id() {
                     let f = FunctionId::Local(i);
                     let e = ModuleEnv::new(self.module, self.others);
-                    format!("{}", f.format_with(&e))
+                    (f, e)
                   } else {
                     let oe = self.others.get(m).unwrap();
                     let om = oe.module().unwrap();
                     let f = FunctionId::Local(i);
                     let e = ModuleEnv::new(om, self.others);
-                    format!("{}", f.format_with(&e))
+                    (f, e)
                   };
-                  r.push(ssa::Value::Function(n.into()));
+                  r.push(ssa::Value::Function(FunctionReference {reference: n.0, representation: format!("{}", n.0.format_with(&n.1)).into()}));
                 }
                 _ => {
                   panic!("unreachable: all node in dictionnary tuple should be functions");

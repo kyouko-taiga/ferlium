@@ -41,6 +41,11 @@ impl Function {
     &self.slots[i].instruction
   }
 
+  /// Returns the function's entry.
+  pub fn entry(&self) -> Option<Block<'_>> {
+    self.blocks.first_address().map(|b| Block { identity: b, holder: self })
+  }
+
   /// Returns the basic block identified by `b`.
   pub fn block(&self, b: BlockIdentity) -> Block<'_> {
     Block {
@@ -78,6 +83,16 @@ impl Function {
   /// Returns the basic block in which `i` is defined.
   pub fn block_defining(&self, i: InstructionIdentity) -> BlockIdentity {
     self.slots[i].parent
+  }
+
+  /// Returns the instruction immediately after `i`, if any.
+  pub fn instruction_after(&self, i: InstructionIdentity) -> Option<InstructionIdentity> {
+    let b = self.block_defining(i);
+    if let Some(BlockBounds(_, last)) = self.blocks[b] {
+      if i != last { self.slots.address_after(i) } else { None }
+    } else {
+      None
+    }
   }
 
   /// Inserts `s` with `perform` and returns its identity.
