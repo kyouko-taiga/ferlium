@@ -23,6 +23,7 @@ mod serde;
 mod simple;
 mod std;
 mod r#trait;
+mod ssa;
 mod r#type;
 mod type_alias;
 mod type_defs;
