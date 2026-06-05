@@ -1,19 +1,16 @@
-use std::mem;
-
 use ustr::Ustr;
 
 use crate::{
-  CompilerSession, Location, Modules, containers, format::FormatWith, hir::{self, Case, GetDictionary, NodeArena, value::{LiteralValue, Value}}, module::{self, FunctionId, ImportFunctionSlotId, LocalDropMode, LocalFunctionId, LocalValueMethodDispatch::{Required, Static}, Module, ModuleEnv, ModuleFunction, ModuleId, TraitDictionary, TraitImpl, TraitImplId, id::Id}, ssa::{self, BlockIdentity, Program, value::FunctionReference}
+   CompilerSession, Location, Modules, containers, format::FormatWith, hir::{self, Case, GetDictionary, Node, NodeArena, value::LiteralValue}, module::{self, FunctionId, ImportFunctionSlotId, LocalDecl, LocalDropMode, LocalFunctionId, Module, ModuleEnv, ModuleId, TraitDictionary, TraitDictionaryId, TraitImpl, TraitImplId, id::Id}, ssa::{self, BlockIdentity, Program, interpreter::FunctionKey, value::{FunctionReference}}
 };
 
 /// Emit the low-level (aka SSA) ferlium IR of `module`.
-/// Returns a string for debugging purpose.
-pub fn emit_ssa(module: &Module, others: &Modules, session: &CompilerSession) -> String {
+pub fn emit_ssa(module: &Module, others: &Modules, session: &CompilerSession, program: &mut Program) -> String {
   let mut a: Vec<String> = [].to_vec();
   for n in module.own_symbols() {
     a.push(format!("{:?}", n));
     if let Some(f) = module.get_local_function_id(n) {
-      a.push(Emitter::emit_ssa_fn(f, module, others, session));
+      a.push(Emitter::emit_ssa_fn(f, module, others, session, program));
     }
   }
   a.join("\n")
@@ -43,6 +40,23 @@ fn get_function_and_module(f: ImportFunctionSlotId, module: &Module, session: &C
   (fi, mi)
 }
 
+/// Emit an anonymous function into its SSA form, and returns its `String` representation.
+pub fn emit_ssa_anonymous_function(fname: Ustr, fidentity: LocalFunctionId, module: &Module, others: &Modules, program: &mut Program, code: &Node, session: &CompilerSession) -> String {
+  Emitter::emit_anonymous_function(fname, fidentity, module, others, program, code, session)
+}
+
+/// The fields to caracterize a `TraitDictionary`.
+struct TraitDictionaryInfos {
+  /// The identity of the `TraitDictionary`.
+  pub identity: TraitDictionaryId,
+
+  /// The `TraitDictionary` itself.
+  pub value: TraitDictionary,
+
+  /// The module identity of the `TraitDictionary`.
+  pub module: ModuleId
+}
+
 /// The SSA blocks involved in the lowering of a case in a match expression.
 struct CaseBlocks {
   /// The conditions head blocks
@@ -70,7 +84,12 @@ struct Emitter<'a> {
   /// The context in which the emitter inserts new IR.
   context: InsertionContext,
 
-  function: &'a ModuleFunction,
+
+  /// The locals of the function being lowered.
+  locals: &'a Vec<LocalDecl>,
+
+  /// The program to set the definition of the function being lowered.
+  program: &'a mut Program,
 
   /// The HIR node arena.
   hir_arena: &'a NodeArena,
@@ -82,20 +101,39 @@ struct Emitter<'a> {
 
 impl<'a> Emitter<'a> {
 
+  /// Emits a anonymous function into SSA and returns its `String` representation
+  fn emit_anonymous_function(fname: Ustr, fidentity: LocalFunctionId,module: &'a Module, others: &'a Modules, program: &mut Program, code: &Node, session: &CompilerSession) -> String {
+    let mut f = ssa::Function::new(fname);
+    let entry = f.add_block().id();
+    let mut emitter = Emitter {
+      module,
+      others,
+      program: program,
+      context: InsertionContext {
+        function: f,
+        point: InsertionPoint::End(entry),
+        span: code.span,
+        environment: vec![],
+      },
+      locals: &vec![],
+      hir_arena: &module.ir_arena,
+      session: session
+    };
+    let v = emitter.lower_as_rvalue(code);
+    emitter.insert(ssa::Instruction::ret(emitter.context.span, v));
+    let g = emitter.program.set_definition(FunctionKey {module: module.module_id(), identity: fidentity}, emitter.context.function);
+    format!("{}", *g)
+  }
+
   /// Generates the IR of `source`, which has the given `identity`.
-  fn emit_ssa_fn(identity: LocalFunctionId, module: &'a Module, others: &'a Modules, session: &CompilerSession) -> String {
+  fn emit_ssa_fn(identity: LocalFunctionId, module: &'a Module, others: &'a Modules, session: &CompilerSession, program: &mut Program) -> String {
     // TODO: This is the program into which IR is being inserted. Eventually that should become
     // an argument of the function, as this data structure should persist.
-    let mut program = Program::new();
-
     let f = module.get_function_by_id(identity).unwrap();
     match f.code.as_ref().as_script() {
       Some(syntax) => {
         // Create the function.
-        // TODO: Use better identities.
-
-        let name = module.get_function_name_by_id(identity).unwrap();
-        let mut lowered = ssa::Function::new(name);
+        let mut lowered = ssa::Function::new(get_function_representation(identity, module, others));
 
         let t = f.definition.ty_scheme.extra_parameters();
 
@@ -116,13 +154,14 @@ impl<'a> Emitter<'a> {
         let mut emitter = Emitter {
           module,
           others,
+          program: program,
           context: InsertionContext {
             function: lowered,
             point: InsertionPoint::End(entry),
             span: code.span,
             environment,
           },
-          function: f,
+          locals: &f.locals,
           hir_arena: &module.ir_arena,
           session: session
         };
@@ -131,10 +170,7 @@ impl<'a> Emitter<'a> {
         let v = emitter.lower_as_rvalue(code);
         emitter.insert(ssa::Instruction::ret(emitter.context.span, v));
 
-        // Save the definition of the lowered function into the SSA program.
-        lowered = emitter.context.function;
-        let g = program.set_definition(lowered);
-        format!("{}", *g)
+        format!("{}", *emitter.program.set_definition(FunctionKey {module: module.module_id(), identity: identity}, emitter.context.function))
       }
 
       None => panic!(),
@@ -171,33 +207,38 @@ impl<'a> Emitter<'a> {
     CaseBlocks { heads, bodies, default: default, tail:tail }
   }
 
-  /// Returns a copy of the dictionnary value holded by `t`.
-  fn dictionnary_value(&mut self, t: &hir::GetDictionary) -> (TraitDictionary, ModuleId) {
+  /// Returns a the `TraitDictionaryInfos` of the `TraitDictionnry` holded by `t`.
+  fn dictionary_value(&mut self, t: &hir::GetDictionary) -> TraitDictionaryInfos {
     match t.dictionary {
       TraitImplId::Local(id) => {
-        (self.dictionnary_value_from_trait(self.module.get_impl_data(id)), self.module.module_id())
+        let dict = self.dictionary_value_from_trait(self.module.get_impl_data(id));
+        let identity = TraitDictionaryId { module_id: self.module.module_id(), impl_id: id };
+        TraitDictionaryInfos { identity: identity, value: dict, module: self.module.module_id() }
       },
       TraitImplId::Import(id) => {
         let slot = self.module.get_import_impl_slot(id).unwrap();
         let other_module = self.others.get(slot.module).unwrap().module().unwrap();
-        (self.dictionnary_value_from_trait(other_module.get_impl_data_by_trait_key(&slot.key)), other_module.module_id())
+        let dict = self.dictionary_value_from_trait(other_module.get_impl_data_by_trait_key(&slot.key));
+        let impl_id = other_module.get_impl_id_by_trait_key(&slot.key).unwrap();
+        let dict_id = TraitDictionaryId { module_id: slot.module, impl_id };
+        TraitDictionaryInfos { identity: dict_id, value: dict, module: other_module.module_id() }
       }
     }
   }
 
   /// Returns a copy of the dictionnary value of `t`.
-  fn dictionnary_value_from_trait(&self, t: Option<&TraitImpl>) -> TraitDictionary {
+  fn dictionary_value_from_trait(&self, t: Option<&TraitImpl>) -> TraitDictionary {
     t.unwrap().dictionary_value.clone()
   }
 
-  /// Converts a HIR `Tuple` into a SSA `Dictionnary`.
-  fn to_ssa_dictionnary(&mut self, n: &GetDictionary) -> ssa::Value {
-    let v = self.dictionnary_value(n);
+  /// Converts a `GetDictionary` node into a SSA `Dictionnary`.
+  fn to_ssa_dictionary(&mut self, n: &GetDictionary) -> ssa::Value {
+    let v = self.dictionary_value(n);
     let mut r: Vec<ssa::Value> = vec![];
-    for m in v.0.methods() {
-      r.push(self.demand_function(m.clone(), v.1))
+    for m in v.value.methods() {
+      r.push(self.demand_function(m.clone(), v.module))
     };
-    ssa::Value::Dictionary(r)
+    ssa::Value::Dictionary(ssa::value::TraitDictionary { identity: v.identity, values: r })
   }
 
   /// Generates the IR for `node`, which occurs as rvalue.
@@ -298,7 +339,7 @@ impl<'a> Emitter<'a> {
 
       K::EnvDrop(n) => {
         // Call the destructor
-        let local = &self.function.locals[n.id.as_index()];
+        let local = &self.locals[n.id.as_index()];
         if local.drop_mode != LocalDropMode::Value {
           return ssa::Value::Unit
         }
@@ -315,10 +356,10 @@ impl<'a> Emitter<'a> {
           module::function::LocalValueMethodDispatch::Dictionary(param_id) => {
             self.context.environment[param_id.as_index()].clone()
           },
-          Required => panic!("Not yet supported")
+          module::function::LocalValueMethodDispatch::Required => panic!("Not yet supported")
         };
         let value = self.context.environment[n.id.as_index()].clone();
-        self.insert(ssa::Instruction::call(self.context.span, drop_fn, vec![value], node.ty));
+        self.insert(ssa::Instruction::call(self.context.span, drop_fn, vec![value], vec![], node.ty));
         ssa::Value::Unit
       },
 
@@ -344,16 +385,18 @@ impl<'a> Emitter<'a> {
         for x in &n.arguments {
           a.push(self.lower_as_rvalue(&self.hir_arena[*x]));
         }
-
+        let mut ea: Vec<ssa::Value> = vec![];
+        for x in &n.extra_arguments {
+          ea.push(self.lower_as_rvalue(&self.hir_arena[*x]));
+        }
         assert!(node.ty == n.ty.ret);
         self
-          .insert(ssa::Instruction::call(node.span, f, a, n.ty.ret))
+          .insert(ssa::Instruction::call(node.span, f, a, ea, n.ty.ret))
           .unwrap()
       }
 
       K::GetDictionary(n) => {
-        let v = self.dictionnary_value(n);
-        self.to_ssa_dictionnary(n)
+        self.to_ssa_dictionary(n)
       }
 
       K::Apply(n) => {
@@ -361,9 +404,8 @@ impl<'a> Emitter<'a> {
         let a: Vec<ssa::Value> = n.arguments.iter()
           .map(|a| self.lower_as_rvalue(&self.hir_arena[*a]))
           .collect();
-
         self.insert(ssa::Instruction::call(
-          node.span, f, a, self.hir_arena[n.function].ty,
+          node.span, f, a, vec![], self.hir_arena[n.function].ty,
         ))
         .unwrap()
       }

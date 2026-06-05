@@ -3,7 +3,7 @@ use std::fmt;
 use itertools::Itertools;
 use ustr::Ustr;
 
-use crate::{module::{LocalFunctionId, ModuleId}, ssa};
+use crate::{module::{LocalFunctionId, ModuleId, TraitDictionaryId}, ssa};
 
 /// A value in the SSA form of Ferlium.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -13,7 +13,7 @@ pub enum Value {
   Boolean(bool),
 
   /// A dictionary value
-  Dictionary(Vec<ssa::Value>),
+  Dictionary(TraitDictionary),
 
   /// A reference to a lowered function.
   Function(FunctionReference),
@@ -36,8 +36,8 @@ impl fmt::Display for Value {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
       Value::Boolean(i) => write!(f, "i1 {}", *i as u8),
-      Value::Dictionary(i) => {
-        write!(f, "({})", i.iter().map(|v| format!("{}", v)).join(", "))
+      Value::Dictionary(t) => {
+        write!(f, "({})", t.values.iter().map(|v| format!("{}", v)).join(", "))
       },
       Value::Function(i) => write!(f, "{}", i.representation),
       Value::Integer(i) => i.fmt(f),
@@ -46,6 +46,18 @@ impl fmt::Display for Value {
       Value::Unit => write!(f, "()")
     }
   }
+}
+
+
+
+/// A SSA TraitDictionnary, represented by its identity and its values
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct TraitDictionary {
+  /// The identity of this trait dictionnary
+  pub identity: TraitDictionaryId,
+
+  /// The value fo this trait dictionnary
+  pub values: Vec<ssa::Value>
 }
 
 /// A function reference, represented as its reference, and its representation
@@ -75,9 +87,10 @@ pub struct Integer {
 }
 
 impl Integer {
+
   pub fn from_isize(value: isize) -> Self {
     Self {
-      bits: isize::cast_unsigned(value) as u64,
+      bits: (value as i64) as u64,
       bit_width: 32,
       signed: true,
     }
@@ -93,10 +106,22 @@ impl Integer {
 
   pub fn from_i32(value: i32) -> Self {
     Self {
-      bits: i32::cast_unsigned(value).into(),
+      bits: (value as i64) as u64,
       bit_width: 32,
       signed: true,
     }
+  }
+
+  pub fn from_u64(value: u64) -> Self {
+    Self {
+      bits: value,
+      bit_width: 64,
+      signed: false
+    }
+  }
+
+  pub fn to_isize(self) -> isize {
+    self.bits as isize
   }
 }
 

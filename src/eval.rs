@@ -542,7 +542,7 @@ impl<'a> EvalCtx<'a> {
     }
 
     /// Call a function along with its correct module context.
-    fn call_function(
+    pub fn call_function(
         &mut self,
         local_id: LocalFunctionId,
         mut module_id: ModuleId,

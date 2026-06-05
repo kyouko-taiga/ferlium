@@ -1,3 +1,6 @@
+use ferlium::emit_ssa::emit_ssa_anonymous_function;
+use ferlium::ssa::interpreter::FunctionKey;
+use ferlium::ssa::{EvaluationContext, Program};
 // Copyright 2026 Enlightware GmbH
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at
@@ -31,7 +34,7 @@ use ferlium::{
 };
 use rustyline::DefaultEditor;
 use rustyline::{config::Configurer, error::ReadlineError};
-use ustr::ustr;
+use ustr::{Ustr, ustr};
 
 use ferlium::eval::{EvalCtx, eval_node_with_ctx};
 
@@ -468,6 +471,7 @@ fn process_input(
     input: &str,
     fill_use_until: usize,
     session: &mut CompilerSession,
+    program: &mut Program,
     is_repl: bool,
 ) -> Result<ModuleId, i32> {
     // Parse the input once to get the list of symbols this module defines.
@@ -487,7 +491,9 @@ fn process_input(
             .get_value_by_name(&Path::single_str(&mod_name))
             && let Some(module) = entry.module()
         {
-            for sym in module.own_symbols() {
+          // This was necessary to call the public method in the repl ?
+          // But it seems that it should be a bug even outside of SSA lowering
+            for sym in module.public_symbols() {
                 if !local_symbols.contains(&sym)
                     && !reverse_uses.contains_key(&sym)
                     // exclude lambda functions
@@ -590,19 +596,29 @@ fn process_input(
                 return Err(2);
             }
         }
+
+        // expression lowering
+        let fname: Ustr = "f0".into();
+        let module = session.expect_fresh_module(module_id);
+        let fidentity = LocalFunctionId(12 as u32);
+        let s = emit_ssa_anonymous_function(fname, fidentity, module, session.modules(), program, &arena[expr.expr], session);
+
+        // expression evalution
+        let mut context = EvaluationContext::new(module_id, session);
+        let r = program.evaluate(FunctionKey {module: module.module_id(), identity: fidentity}, vec![], vec![], &mut context);
+        println!("SSA Evaluation result : {}", r);
     } else {
         // No expression, just module definitions - that's successful
         if !is_repl {
             println!("No expression to evaluate.");
         }
+        // standard SSA lowering
+        let s = session.emit_ssa(name, input, program);
+        if env::args().any(|arg| arg == "--print-ssa") {
+          println!("SSA:\n{}", s);
+        }
     }
 
-    let print_ssa: bool = env::args().any(|arg| arg == "--print-ssa");
-
-    if print_ssa {
-        let ssa = session.emit_ssa(name, input);
-        println!("{}", ssa);
-    }
 
     Ok(module_id)
 }
@@ -662,9 +678,9 @@ fn process_pipe_input(print_module: bool, print_annotations: bool) -> i32 {
 
     // Initialize ferlium contexts
     let mut session = CompilerSession::new();
-
+    let mut program = Program::new();
     // Process the input
-    process_input("<stdin>", &input, 0, &mut session, false).map_or_else(
+    process_input("<stdin>", &input, 0, &mut session, &mut program, false).map_or_else(
         |code| code,
         |module_id| {
             if print_module {
@@ -772,6 +788,8 @@ fn run_interactive_repl() {
 
     // ferlium emission and evaluation contexts
     let mut session = CompilerSession::new();
+
+    let mut program: Program = Program::new();
     // Last module that compiled successfully, start with the std module.
     let mut last_module = ModuleId::from_index(0);
     let mut counter: usize = 0;
@@ -926,7 +944,7 @@ fn run_interactive_repl() {
 
         // Process the input using the shared function
         let name = &format!("repl{counter}");
-        let result = process_input(&name, &src, counter, &mut session, true);
+        let result = process_input(&name, &src, counter, &mut session, &mut program, true);
         if let Ok(module) = result {
             last_module = module;
         }
