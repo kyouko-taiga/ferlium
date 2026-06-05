@@ -12,27 +12,12 @@ use derive_new::new;
 use itertools::Itertools;
 
 use crate::{
-    FxHashSet, Location, SourceId, SourceTable, ast, compilation_error,
-    compiler::diagnostics::ModuleDiagnostic,
-    compiler::error::{CompilationError, LocatedError},
-    compiler::pipeline::{
+    FxHashSet, Location, ModuleDiagnostic, SourceId, SourceTable, ast, compilation_error, compiler::{error::{CompilationError, LocatedError}, pipeline::{
         ModuleRef, compile_with_source_id, new_ast_arena_sized_from_source, parse_module_and_expr,
-    },
-    containers::b,
-    define_id_type,
-    emit_ssa,
-    eval::{EvalCtx, RuntimeError, ValOrMut, eval_node_with_ctx},
-    format::FormatWith,
-    hir::emit_ir::{CompiledExpr, EmitModuleFrom, emit_expr, emit_module},
-    hir::value::Value,
-    hir::{self, hir_syn::local},
-    module::{
+    }}, containers::b, define_id_type, emit_ssa, eval::{EvalCtx, RuntimeError, ValOrMut, eval_node_with_ctx}, format::FormatWith, hir::{self, emit_ir::{CompiledExpr, EmitModuleFrom, emit_expr, emit_module}, hir_syn::local, value::Value}, module::{
         self, LocalDecl, Module, ModuleEnv, ModuleFunction, ModuleId, Path, Uses,
         id::{Id, NamedIndexed},
-    },
-    parser::{self, describe_parse_error},
-    std::{self as ferlium_std, STD_MODULE_ID, new_module_using_std},
-    types::r#type::Type,
+    }, parser::{self, describe_parse_error}, ssa::Program, std::{self as ferlium_std, STD_MODULE_ID, new_module_using_std}, types::r#type::Type
 };
 
 /// A compiled module and an expression (if any).
@@ -825,12 +810,12 @@ impl CompilerSession {
         )
     }
 
-    /// Emits the SSA form for the given `source_name`
-    pub fn emit_ssa(&mut self, source_name: &str, src: &str) -> String {
-        let p = module::Path::single_str(source_name);
-        let i = self.compile(src, source_name, p).unwrap().module_id;
+    /// Emit the SSA form for the given `source_name`
+    pub fn emit_ssa(&mut self, source_name: &str, src: &str, program: &mut Program) -> String {
+        let path = module::Path::single_str(source_name);
+        let i = self.compile(src, source_name, path).unwrap().module_id;
         let module = self.expect_fresh_module(i);
-        emit_ssa::emit_ssa(module, self.modules(), self)
+        emit_ssa::emit_ssa(module, self.modules(), self, program)
     }
 
     /// Returns the entry for module_id, or panic if not found.

@@ -15,11 +15,7 @@ use ferlium::{
     hir::value::Value,
     module::ModuleId,
     run_fn_native,
-    std::{
-        array::{array_type, array_value_from_vec},
-        math::int_type,
-        string::String as Str,
-    },
+    std::{array::array_type, math::int_type, string::String as Str},
 };
 
 // --- User-code corpus ---
