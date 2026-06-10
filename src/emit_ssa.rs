@@ -5,19 +5,20 @@ use ustr::Ustr;
 use crate::module::{
     ExtraParameterId, ResolvedLocalClone, ResolvedLocalDrop, ResolvedTakeLocalValueMode,
 };
+use crate::types::r#type::{FnReturnConvention, FnType};
 use crate::{
-    containers, format::FormatWith, hir::{
-        self, value::LiteralValue, CallArgument, Case, ENode, ENodeArena, Elaborated, GetDictionary,
-        LoopId,
-    }, module::{
-        self, id::Id, FunctionId, ImportFunctionSlotId, LocalDeclId, LocalFunctionId, Module,
-        ModuleEnv, ModuleId, TraitDictionary, TraitImpl, TraitImplId,
+    CompilerSession, Location, Modules, containers,
+    format::FormatWith,
+    hir::{
+        self, CallArgument, Case, ENode, ENodeArena, Elaborated, GetDictionary, LoopId,
+        value::LiteralValue,
     },
-    ssa::{self, value::FunctionReference, BlockIdentity, Program},
+    module::{
+        self, FunctionId, ImportFunctionSlotId, LocalDeclId, LocalFunctionId, Module, ModuleEnv,
+        ModuleId, TraitDictionary, TraitImpl, TraitImplId, id::Id,
+    },
+    ssa::{self, BlockIdentity, Program, value::FunctionReference},
     types::r#type::Type,
-    CompilerSession,
-    Location,
-    Modules,
 };
 
 /// Emits the textual representation of the low-level (aka SSA) ferlium IR of `module`.
@@ -257,6 +258,9 @@ impl<'a> Emitter<'a> {
                 ))
                 .unwrap()
             }
+            K::Apply(n) if n.ty.returns_place() => {
+
+            }
             // A value-producing node is materialized into a temporary place.
             _ => {
                 let temp = self
@@ -355,12 +359,18 @@ impl<'a> Emitter<'a> {
     /// Returns the out-pointer to pass to a call producing `node`'s value, given the caller's
     /// destination. Every call receives an out-pointer unconditionally, even `()`-typed ones: the
     /// caller's destination is used, or a fresh throwaway temporary when the result is discarded.
-    fn call_out_ptr(&mut self, node: &ENode, dest: Option<ssa::Value>) -> ssa::Value {
+    fn call_out_ptr(&mut self, node: &ENode, dest: Option<ssa::Value>, f: &FnType) -> ssa::Value {
         if let Some(dest) = dest {
             dest
         } else {
-            self.insert(ssa::Instruction::alloca(node.span, node.ty))
-                .unwrap()
+            match f.return_convention {
+                FnReturnConvention::Value => self
+                    .insert(ssa::Instruction::alloca(node.span, node.ty))
+                    .unwrap(),
+                FnReturnConvention::Place => self
+                    .insert(ssa::Instruction::alloca_place(node.span, node.ty))
+                    .unwrap(),
+            }
         }
     }
 
@@ -562,7 +572,7 @@ impl<'a> Emitter<'a> {
                 }
 
                 assert_eq!(node.ty, n.ty.ret);
-                arguments.push(self.call_out_ptr(node, dest));
+                arguments.push(self.call_out_ptr(node, dest, &n.ty));
                 self.insert(ssa::Instruction::call(node.span, f, arguments, n.ty.ret));
             }
 
@@ -578,7 +588,7 @@ impl<'a> Emitter<'a> {
                     .iter()
                     .map(|arg| self.lower_argument(arg))
                     .collect();
-                arguments.push(self.call_out_ptr(node, dest));
+                arguments.push(self.call_out_ptr(node, dest, &n.ty));
                 self.insert(ssa::Instruction::call(node.span, f, arguments, n.ty.ret));
             }
 
@@ -648,7 +658,7 @@ impl<'a> Emitter<'a> {
 
                 let mut arguments: Vec<ssa::Value> =
                     n.arguments.iter().map(|a| self.lower_argument(a)).collect();
-                arguments.push(self.call_out_ptr(node, dest));
+                arguments.push(self.call_out_ptr(node, dest, &n.ty));
                 self.insert(ssa::Instruction::call(
                     node.span, method, arguments, n.ty.ret,
                 ));

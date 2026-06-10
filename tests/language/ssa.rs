@@ -327,6 +327,14 @@ fn hir_param_mut_local_copy() {
 }
 
 #[test]
+fn hir_array() {
+    print_param_hir(
+        "hir_array",
+        "fn f(x: [int]) { let res = x[0]; let y = res; }",
+    );
+}
+
+#[test]
 fn hir_param_inout_ref() {
     // 3b) Un-annotated param assigned in body -> inferred in/out MutableRef; caller IS affected.
     print_param_hir(
@@ -376,10 +384,10 @@ fn hir_param_record_field() {
 
 #[test]
 fn hir_param_array_mutation() {
-    // 9) Array param mutated through index places -> Assign into projection, MutableRef.
+    // 9) Array param mutated through index places -> Assign to place.
     print_param_hir(
         "array_mutation",
-        "fn swap(a, i, j) { let t = a[i]; a[i] = a[j]; a[j] = t }",
+        "fn swap(a: &mut [int]) { a[1] = 3; }",
     );
 }
 
@@ -554,6 +562,18 @@ fn iter1_let_mut_move_return() {
     %r9 = store %r8 to %p1
     %r10 = ret
 "#,
+    );
+}
+
+#[test]
+fn array_ssa() {
+    // `let mut y = x` -> Owned local (alloca) initialized by a trivial-copy clone
+    // of the by-value param; tail `y` is a `TakeLocalValue(MoveOwned)` -> load + no
+    // drop (drop is Skip for int anyway).
+    let mut session = TestSession::new();
+    assert_eq!(
+        session.emit_ssa("fn s(a: &mut [bool]) { a[1] = true; } fn r(a: [bool]) { a[0] and true; }"),
+        r#""#,
     );
 }
 

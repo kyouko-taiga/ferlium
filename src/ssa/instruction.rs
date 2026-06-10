@@ -41,6 +41,14 @@ impl Instruction {
         }
     }
 
+    pub fn alloca_place(span: Location, pointing_to: Type) -> Self {
+        Instruction {
+            span,
+            operands: vec![],
+            kind: Box::new(AllocaPlace { pointing_to }),
+        }
+    }
+
     /// Creates a 'br' instruction with the given properties.
     pub fn br(span: Location, target: ssa::BlockIdentity) -> Self {
         Instruction {
@@ -213,6 +221,29 @@ impl InstructionKind for Alloca {
         env: &ModuleEnv<'_>,
     ) -> fmt::Result {
         write!(f, "alloca {}", self.ty.format_with(env))
+    }
+}
+
+/// A stack allocation of a pointer to a value.
+struct AllocaPlace {
+    /// The type of object the allocated pointer points to.
+    pub pointing_to: Type,
+}
+
+impl InstructionKind for AllocaPlace {
+    fn result(&self, _whole: &Instruction) -> InstructionResult {
+        InstructionResult::pointer_to(InstructionResult::pointer_to(InstructionResult::Lowered(
+            self.pointing_to,
+        )))
+    }
+
+    fn fmt_within(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        _whole: &Instruction,
+        env: &ModuleEnv<'_>,
+    ) -> fmt::Result {
+        write!(f, "alloca_place {}", self.pointing_to.format_with(env))
     }
 }
 
