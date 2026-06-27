@@ -1212,6 +1212,11 @@ impl<'a> Interpreter<'a> {
     fn restore_stack(&mut self, marker: usize) {
         while self.ctx.environment.len() > marker {
             if let Some(ValOrMut::Val(v)) = self.ctx.environment.pop() {
+                debug_assert!(
+                    is_reclaimable(&v),
+                    "SSA leak: stack_restore reclaims a live resource-owning value \
+                     (a missing explicit drop): {v:?}"
+                );
                 v.discard_storage();
             }
         }
@@ -1327,7 +1332,9 @@ impl<'a> Interpreter<'a> {
             ssa::Value::Boolean(b) => Value::native(*b),
             ssa::Value::Integer(i) => Value::native(i.to_isize()),
             ssa::Value::Unit => Value::unit(),
-            ssa::Value::String(s) => Value::native(s.clone()),
+            // A `"…"` constant is a static literal: its bytes live in the data segment (`cap == 0`),
+            // so it owns no heap and needs no drop (see `owns_resources`).
+            ssa::Value::String(s) => Value::native(s.clone().into_static_literal()),
             ssa::Value::Function(r) => Value::function(r.identity, r.module),
             ssa::Value::Uninit(_) => Value::uninit(),
             ssa::Value::Float(f) => Value::native(
@@ -1431,6 +1438,11 @@ impl<'a> Interpreter<'a> {
             .target_mut(&mut self.ctx)
             .expect("store to an invalid place");
         let old = std::mem::replace(slot, v);
+        debug_assert!(
+            is_reclaimable(&old),
+            "SSA leak: store overwrites a live resource-owning value \
+             (a missing explicit drop): {old:?}"
+        );
         old.discard_storage();
         Ok(())
     }
@@ -1552,6 +1564,34 @@ fn is_drop_husk(v: &Value) -> bool {
         Value::Tuple(fields) => !fields.is_empty() && fields.iter().all(is_drop_husk),
         _ => false,
     }
+}
+
+/// Whether `v` owns a resource that an explicit `drop` must release — heap storage (a `string`'s
+/// buffer, an array `Buffer`) or a closure's captured environment — anywhere inside it.
+///
+/// This is the property `discard_storage` papers over: it frees the underlying Rust value, but a real
+/// backend frees nothing on a stack-pop or slot overwrite. A static-literal `string` (`cap == 0`),
+/// a scalar, an aggregate/variant of such, or a bare function owns nothing and is free to discard;
+/// `read_copy` recognizes the trivially-copyable leaves.
+fn owns_resources(v: &Value) -> bool {
+    match v {
+        Value::Uninit => false,
+        Value::Tuple(fields) => fields.iter().any(owns_resources),
+        Value::Variant(variant) => owns_resources(&variant.value),
+        Value::Function(f) => f.closure_env_len != 0,
+        Value::Native(_) if v.as_primitive_ty::<crate::std::string::String>().is_some() => {
+            !v.as_primitive_ty::<crate::std::string::String>()
+                .unwrap()
+                .is_static_literal()
+        }
+        Value::Native(_) => read_copy(v).is_none(),
+    }
+}
+
+/// Whether `v` can be reclaimed by a stack-pop or slot overwrite without leaking — i.e. it
+/// [owns no resource](owns_resources).
+fn is_reclaimable(v: &Value) -> bool {
+    !owns_resources(v)
 }
 
 /// Returns a husk mirroring the aggregate *skeleton* of `v`: a `Tuple` becomes a `Tuple` of

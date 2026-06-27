@@ -246,6 +246,25 @@ fn serialize_with_type_ascription() {
     );
 }
 
+// `deserialize` materializes the parsed `DataValue` into an owned local for variants, records, and
+// arrays; each must be dropped or its owned strings leak (the SSA discard invariant catches it).
+// Round-trip all three with string content.
+#[test]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+fn json_roundtrip_drops_deserialize_temporaries() {
+    let mut session = TestSession::new();
+    assert_val_eq!(
+        session.run(r#"(json_decode(json_encode(Some("hi"))): None | Some(string))"#),
+        some(string("hi"))
+    );
+    assert_val_eq!(
+        session.run(
+            r#"(json_decode(json_encode({ tag: "x", items: ["a", "b"] })): { items: [string], tag: string }).tag"#
+        ),
+        string("x")
+    );
+}
+
 #[test]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
 fn json_serialization_roundtrip() {
